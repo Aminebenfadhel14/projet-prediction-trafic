@@ -150,27 +150,35 @@ def save_chart(by_day_and_hour, by_day_type):
     plt.close(fig)
 
 
-def main():
-    if not DATASET_PATH.is_file():
-        raise SystemExit("Jeu de données absent. Lance d’abord python src/download_data.py.")
+def start_spark(app_name):
     spark = (
         SparkSession.builder.master("local[2]")
-        .appName("Analyse du trafic I-94")
+        .appName(app_name)
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+    return spark
+
+
+def read_traffic(spark):
+    if not DATASET_PATH.is_file():
+        raise SystemExit("Jeu de données absent. Lance d’abord python src/download_data.py.")
+    return (
+        spark.read.schema(SCHEMA)
+        .option("header", True)
+        .option("enforceSchema", False)
+        .option("mode", "FAILFAST")
+        .option("timestampNTZFormat", "yyyy-MM-dd HH:mm:ss")
+        .csv(DATASET_PATH.as_posix())
+    )
+
+
+def main():
+    spark = start_spark("Analyse du trafic I-94")
     try:
-        raw = (
-            spark.read.schema(SCHEMA)
-            .option("header", True)
-            .option("enforceSchema", False)
-            .option("mode", "FAILFAST")
-            .option("timestampNTZFormat", "yyyy-MM-dd HH:mm:ss")
-            .csv(DATASET_PATH.as_posix())
-            .cache()
-        )
+        raw = read_traffic(spark).cache()
         raw.printSchema()
         raw.show(5, truncate=False)
         hourly, quality = inspect_data(raw)

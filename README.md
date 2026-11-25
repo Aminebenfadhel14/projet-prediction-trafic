@@ -1,6 +1,6 @@
 # Projet de prédiction du trafic
 
-Cette première étape étudie les comptages horaires de l’I‑94 en direction ouest, entre Minneapolis et Saint Paul. Elle prépare le travail de prévision à une heure.
+Ce projet étudie les comptages horaires de l’I‑94 en direction ouest, entre Minneapolis et Saint Paul, et prévoit le volume de trafic à l’heure suivante.
 
 ## Exécuter l’analyse sous Windows
 
@@ -38,6 +38,21 @@ if ($projectJdk) { $env:JAVA_HOME = $projectJdk.FullName }
 | `trafic_semaine_weekend.csv` | Moyenne et nombre de relevés par heure pour les deux types de jours. |
 | `profils_trafic.png` | Courbes semaine et week-end, et carte de chaleur des volumes horaires. |
 
-Le nombre d’heures absentes compare les horodatages disponibles à une grille horaire continue entre le premier et le dernier relevé, dans l’heure locale telle qu’elle est fournie. Une heure absente doit rester distincte d’une heure avec un comptage de zéro. Pour préparer le futur modèle, il faudra associer chaque relevé à celui situé exactement une heure plus tard et écarter les paires dont la cible manque.
+Le nombre d’heures absentes compare les horodatages disponibles à une grille horaire continue entre le premier et le dernier relevé, dans l’heure locale telle qu’elle est fournie. Une heure absente doit rester distincte d’une heure avec un comptage de zéro.
+
+## Entraîner le modèle à une heure
+
+Après avoir configuré Java et téléchargé le jeu de données avec les commandes ci-dessus, lance cette commande depuis le dossier du projet.
+
+```powershell
+.\.venv\Scripts\python.exe src/train_traffic.py
+```
+
+1. Le script réutilise les relevés horaires validés de l’analyse. Pour chaque relevé, il calcule `target_at = observed_at + 1 heure` et récupère le volume réel via une jointure sur cet horodatage. Si le relevé à l’heure suivante manque, la paire ne sert pas à l’entraînement ou à l’évaluation.
+2. Il utilise le volume déjà observé et le créneau calendaire de l’heure à prévoir. Le code du créneau va de 0 à 23 en semaine et de 24 à 47 le week-end. Le pipeline encode ces créneaux en indicateurs binaires et assemble les entrées numériques de la régression. Les variables météo sont écartées de cette première version.
+3. Il découpe les paires selon la date cible. L’entraînement utilise les dates avant 2017, la validation utilise 2017 et le test utilise 2018. L’encodage et la régression linéaire sont ajustés sur l’entraînement.
+4. Il compare la régression à la persistance, qui reprend le volume observé à l’heure précédente. La MAE est l’erreur absolue moyenne et la RMSE donne davantage de poids aux grosses erreurs.
+
+Le script écrit `outputs/forecast/metrics.json` avec les scores et les effectifs par période. Le fichier `outputs/forecast/predictions_test.csv` contient les horodatages, la prévision, le volume réel et le volume de référence (`volume_now`).
 
 Source des données. John Hogue (2019), *Metro Interstate Traffic Volume*, UCI Machine Learning Repository, licence CC BY 4.0. [Fiche UCI](https://doi.org/10.24432/C5X60B)
