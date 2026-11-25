@@ -55,4 +55,12 @@ Après avoir configuré Java et téléchargé le jeu de données avec les comman
 
 Le script écrit `outputs/forecast/metrics.json` avec les scores et les effectifs par période. Le fichier `outputs/forecast/predictions_test.csv` contient les horodatages, la prévision, le volume réel et le volume de référence (`volume_now`).
 
+## Déterminer le niveau de trafic prévu
+
+La même commande exécute la détection avec PySpark. `src/congestion.py` calcule les percentiles P50 et P85 sur les volumes cibles de l’entraînement. Les volumes inférieurs au P50 sont classés faibles. Entre le P50 inclus et le P85 exclu, ils sont modérés. À partir du P85 inclus, ils sont élevés.
+
+Le script applique ces seuils au volume prévu pour produire `predicted_level`, puis au volume observé pour produire `actual_level`, utilisé lors de l’évaluation. Les deux colonnes figurent dans `predictions_test.csv`. Dans `metrics.json`, les lignes de la matrice de confusion correspondent aux niveaux observés et les colonnes aux niveaux prévus.
+
+Pour la classe élevée, la précision mesure la part des alertes qui correspondent à un volume réellement élevé. Le rappel mesure la part des heures de trafic élevé que le système signale. Les niveaux reposent sur le nombre de véhicules par heure. Le jeu de données ne fournit ni la vitesse ni le temps de trajet, donc le niveau élevé est un indicateur indirect de congestion.
+
 Source des données. John Hogue (2019), *Metro Interstate Traffic Volume*, UCI Machine Learning Repository, licence CC BY 4.0. [Fiche UCI](https://doi.org/10.24432/C5X60B)

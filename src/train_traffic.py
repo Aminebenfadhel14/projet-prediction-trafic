@@ -8,6 +8,7 @@ from pyspark.ml.regression import LinearRegression
 from pyspark.sql import functions as F
 
 from analyze_traffic import inspect_data, read_traffic, start_spark
+from congestion import evaluate_levels, fit_thresholds, traffic_level
 from download_data import PROJECT_DIR
 
 
@@ -75,19 +76,26 @@ def main():
             LinearRegression(labelCol="volume_next", predictionCol="forecast_raw", regParam=0.001),
         ])
         model = pipeline.fit(train)
+        low, high = fit_thresholds(train)
         report = {
             "validation_start": VALIDATION_START,
             "test_start": TEST_START,
             "hourly_observations": quality["analyzed_hours"],
             "examples_per_split": counts,
             "observations_without_next_hour": quality["analyzed_hours"] - sum(counts.values()),
+            "congestion": {"thresholds": {"p50": low, "p85": high}},
         }
         for name, frame in (("validation", validation), ("test", test)):
             # Un volume de trafic est toujours positif ou nul.
             predictions = model.transform(frame).withColumn(
                 "forecast", F.greatest(F.lit(0.0), F.col("forecast_raw"))
-            ).select("observed_at", "target_at", "volume_now", "volume_next", "forecast").cache()
+            ).select(
+                "observed_at", "target_at", "volume_now", "volume_next", "forecast",
+                traffic_level(F.col("forecast"), low, high).alias("predicted_level"),
+                traffic_level(F.col("volume_next"), low, high).alias("actual_level"),
+            ).cache()
             report[name] = evaluate(predictions)
+            report["congestion"][name] = evaluate_levels(predictions)
             if name == "test":
                 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
                 with (OUTPUT_DIR / "predictions_test.csv").open("w", newline="", encoding="utf-8") as out:
