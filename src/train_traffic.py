@@ -17,20 +17,55 @@ VALIDATION_START = "2017-01-01 00:00:00"
 TEST_START = "2018-01-01 00:00:00"
 
 
-def prepare_examples(hourly):
-    known_now = hourly.select(
+def with_forecast_features(hourly):
+    forecast_hours = hourly.select(
         F.col("date_time").alias("observed_at"),
         F.expr("date_time + INTERVAL 1 HOUR").alias("target_at"),
         F.col("traffic_volume").alias("volume_now"),
     )
+    is_weekend = (F.weekday("target_at") >= 5).cast("int")
+    return forecast_hours.withColumn("hour_type", F.hour("target_at") + 24 * is_weekend)
+
+
+def prepare_examples(hourly):
     actual_next_hour = hourly.select(
         F.col("date_time").alias("target_at"),
         F.col("traffic_volume").alias("volume_next"),
     )
     # La jointure exclut les heures sans mesure à h + 1, même si une mesure existe plus tard.
-    pairs = known_now.join(actual_next_hour, "target_at", "inner")
-    is_weekend = (F.weekday("target_at") >= 5).cast("int")
-    return pairs.withColumn("hour_type", F.hour("target_at") + 24 * is_weekend)
+    return with_forecast_features(hourly).join(actual_next_hour, "target_at", "inner")
+
+
+def split_examples(examples):
+    # Les périodes sont définies par l’heure à prédire, y compris aux frontières.
+    validation_start = F.lit(VALIDATION_START).cast("timestamp_ntz")
+    test_start = F.lit(TEST_START).cast("timestamp_ntz")
+    train = examples.where(F.col("target_at") < validation_start)
+    validation = examples.where(
+        (F.col("target_at") >= validation_start) & (F.col("target_at") < test_start)
+    )
+    test = examples.where(F.col("target_at") >= test_start)
+    return train, validation, test
+
+
+def fit_forecast(train):
+    pipeline = Pipeline(stages=[
+        OneHotEncoder(
+            inputCols=["hour_type"], outputCols=["calendar_features"],
+            handleInvalid="keep", dropLast=False,
+        ),
+        VectorAssembler(inputCols=["volume_now", "calendar_features"], outputCol="features"),
+        LinearRegression(labelCol="volume_next", predictionCol="forecast_raw", regParam=0.001),
+    ])
+    low, high = fit_thresholds(train)
+    return pipeline.fit(train), low, high
+
+
+def forecast_traffic(model, features, low, high):
+    # Un volume de trafic est toujours positif ou nul.
+    return model.transform(features).withColumn(
+        "forecast", F.greatest(F.lit(0.0), F.col("forecast_raw"))
+    ).withColumn("predicted_level", traffic_level(F.col("forecast"), low, high))
 
 
 def evaluate(predictions):
@@ -53,30 +88,14 @@ def main():
         hourly, quality = inspect_data(raw)
         examples = prepare_examples(hourly).cache()
 
-        # Les périodes sont définies par l’heure à prédire, y compris aux frontières.
-        validation_start = F.lit(VALIDATION_START).cast("timestamp_ntz")
-        test_start = F.lit(TEST_START).cast("timestamp_ntz")
-        train = examples.where(F.col("target_at") < validation_start)
-        validation = examples.where(
-            (F.col("target_at") >= validation_start) & (F.col("target_at") < test_start)
-        )
-        test = examples.where(F.col("target_at") >= test_start)
+        train, validation, test = split_examples(examples)
         counts = {name: frame.count() for name, frame in (
             ("train", train), ("validation", validation), ("test", test),
         )}
         if not all(counts.values()):
             raise ValueError("Une des trois périodes ne contient aucune paire horaire.")
 
-        pipeline = Pipeline(stages=[
-            OneHotEncoder(
-                inputCols=["hour_type"], outputCols=["calendar_features"],
-                handleInvalid="keep", dropLast=False,
-            ),
-            VectorAssembler(inputCols=["volume_now", "calendar_features"], outputCol="features"),
-            LinearRegression(labelCol="volume_next", predictionCol="forecast_raw", regParam=0.001),
-        ])
-        model = pipeline.fit(train)
-        low, high = fit_thresholds(train)
+        model, low, high = fit_forecast(train)
         report = {
             "validation_start": VALIDATION_START,
             "test_start": TEST_START,
@@ -86,12 +105,8 @@ def main():
             "congestion": {"thresholds": {"p50": low, "p85": high}},
         }
         for name, frame in (("validation", validation), ("test", test)):
-            # Un volume de trafic est toujours positif ou nul.
-            predictions = model.transform(frame).withColumn(
-                "forecast", F.greatest(F.lit(0.0), F.col("forecast_raw"))
-            ).select(
-                "observed_at", "target_at", "volume_now", "volume_next", "forecast",
-                traffic_level(F.col("forecast"), low, high).alias("predicted_level"),
+            predictions = forecast_traffic(model, frame, low, high).select(
+                "observed_at", "target_at", "volume_now", "volume_next", "forecast", "predicted_level",
                 traffic_level(F.col("volume_next"), low, high).alias("actual_level"),
             ).cache()
             report[name] = evaluate(predictions)
