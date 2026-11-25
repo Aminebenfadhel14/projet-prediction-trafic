@@ -63,4 +63,25 @@ Le script applique ces seuils au volume prévu pour produire `predicted_level`, 
 
 Pour la classe élevée, la précision mesure la part des alertes qui correspondent à un volume réellement élevé. Le rappel mesure la part des heures de trafic élevé que le système signale. Les niveaux reposent sur le nombre de véhicules par heure. Le jeu de données ne fournit ni la vitesse ni le temps de trajet, donc le niveau élevé est un indicateur indirect de congestion.
 
+## Simuler l’arrivée des relevés avec Structured Streaming
+
+Sous Windows, cette démo utilise Docker Desktop avec l’image officielle Spark 4.1.4 et NumPy pour Spark ML. Le conteneur Linux fournit le support Hadoop nécessaire à la lecture des dossiers surveillés et à l’écriture du checkpoint. Lance ces commandes depuis le dossier du projet dans PowerShell, avec le fichier UCI déjà téléchargé.
+
+```powershell
+docker build -f docker/streaming.Dockerfile -t projet-prediction-trafic-streaming:4.1.4 docker
+$project = (Get-Item -LiteralPath '.').FullName
+docker run --rm --mount "type=bind,source=$project,target=/project" --workdir /project projet-prediction-trafic-streaming:4.1.4 /opt/spark/bin/spark-submit --conf spark.ui.showConsoleProgress=false src/stream_traffic.py --count 8 --interval 1
+```
+
+La construction de l’image est nécessaire une première fois. Ensuite, relance la commande `docker run` pour chaque démonstration.
+
+Le script réentraîne une seule fois le modèle sur la période d’entraînement et y calcule les seuils P50 et P85. Il sélectionne ensuite des relevés de la période de test dans l’ordre chronologique, à partir du 2 janvier 2018 à 5 h par défaut. Tu peux changer ce départ avec `--start "2018-01-03 07:00:00"`.
+
+1. `publish_reading` écrit un fichier JSON par relevé et le déplace une fois complet dans le dossier surveillé.
+2. `readStream` lit ces fichiers avec un schéma explicite et traite au plus un fichier par micro-lot.
+3. Le pipeline partagé calcule l’heure cible et ses variables calendaires, applique le modèle entraîné et attribue le niveau de trafic prévu. Seules les données disponibles au moment du relevé entrent dans la prévision.
+4. `writeStream` affiche dans la console `observed_at`, `volume_now`, `target_at`, `forecast` et `predicted_level`. La simulation attend que le micro-lot soit traité avant de faire la pause et de déposer le suivant.
+
+Chaque exécution crée son propre dossier sous `outputs/streaming/`, avec le dossier `incoming/` et le `checkpoint/` qui enregistre la progression de Spark. Le rejeu s’arrête après le nombre demandé de relevés disponibles. Les horodatages restent ceux du fichier historique et le niveau prévu demeure un indicateur indirect de congestion.
+
 Source des données. John Hogue (2019), *Metro Interstate Traffic Volume*, UCI Machine Learning Repository, licence CC BY 4.0. [Fiche UCI](https://doi.org/10.24432/C5X60B)
